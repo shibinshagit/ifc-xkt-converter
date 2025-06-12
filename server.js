@@ -18,6 +18,7 @@ const storage = multer.diskStorage({
         cb(null, file.fieldname + '-' + uniqueSuffix + ext);
     }
 });
+
 const upload = multer({ storage: storage });
 
 // Serve static files
@@ -38,28 +39,78 @@ app.post('/convert', upload.array('ifcFiles'), async (req, res) => {
 
         // Process each file sequentially
         for (const file of files) {
-            const ifcPath = path.resolve(__dirname, file.path); // Use absolute path
+            const ifcPath = path.resolve(__dirname, file.path);
             const outputName = `${path.basename(file.originalname, '.ifc')}.xkt`;
             const outputPath = path.join(downloadsDir, outputName);
 
-            // Run convert2xkt.js with absolute path
-            const command = `node convert2xkt.js -s "${ifcPath}" -o "${outputPath}" -l`;
-            await execPromise(command, { cwd: path.join(__dirname, 'xeokit-convert') });
+            console.log(`Converting: ${ifcPath} -> ${outputPath}`);
 
-            outputFiles.push({
-                name: outputName,
-                url: `/downloads/${outputName}`
-            });
+            // Use npx to run the converter (recommended approach)
+            const command = `npx convert2xkt -s "${ifcPath}" -o "${outputPath}" -l`;
+            
+            try {
+                const { stdout, stderr } = await execPromise(command, { 
+                    cwd: __dirname,
+                    timeout: 300000 // 5 minute timeout
+                });
+                
+                console.log('Conversion stdout:', stdout);
+                if (stderr) console.log('Conversion stderr:', stderr);
+                
+                outputFiles.push({
+                    name: outputName,
+                    url: `/downloads/${outputName}`
+                });
+                
+            } catch (conversionError) {
+                console.error('Conversion error:', conversionError);
+                
+                // Try alternative method using node_modules path
+                console.log('Trying alternative method...');
+                const altCommand = `node ./node_modules/@xeokit/xeokit-convert/convert2xkt.js -s "${ifcPath}" -o "${outputPath}" -l`;
+                
+                try {
+                    const { stdout, stderr } = await execPromise(altCommand, { 
+                        cwd: __dirname,
+                        timeout: 300000
+                    });
+                    
+                    console.log('Alternative conversion stdout:', stdout);
+                    if (stderr) console.log('Alternative conversion stderr:', stderr);
+                    
+                    outputFiles.push({
+                        name: outputName,
+                        url: `/downloads/${outputName}`
+                    });
+                    
+                } catch (altError) {
+                    console.error('Alternative conversion also failed:', altError);
+                    throw altError;
+                }
+            }
 
             // Clean up uploaded file
-            await fs.unlink(ifcPath);
+            try {
+                await fs.unlink(ifcPath);
+            } catch (unlinkError) {
+                console.warn('Could not delete uploaded file:', unlinkError);
+            }
         }
 
         res.json({ files: outputFiles });
+        
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Conversion failed' });
+        console.error('Overall conversion error:', error);
+        res.status(500).json({ 
+            error: 'Conversion failed', 
+            details: error.message 
+        });
     }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 // Start server
